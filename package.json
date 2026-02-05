@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "start:prod": "serve -s dist -l 3000 -n",
+    "start:prod": "serve -s dist -l 3000",
     "preview": "vite preview",
     "cap:init": "cap init",
     "cap:add:ios": "cap add ios",
@@ -23,7 +23,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "serve": "^14.2.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.2",
@@ -33,7 +34,6 @@
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.18",
     "postcss": "^8.4.35",
-    "serve": "^14.2.1",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.2.2",
     "vite": "^7.3.1"

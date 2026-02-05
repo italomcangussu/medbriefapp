@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "start:prod": "serve -s dist -l 5173 -n",
+    "start:prod": "serve -s dist -l 3000 -n",
     "preview": "vite preview",
     "cap:init": "cap init",
     "cap:add:ios": "cap add ios",

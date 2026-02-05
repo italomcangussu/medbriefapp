@@ -1,0 +1,8 @@
+{
+  "name": "MedBrief",
+  "description": "A medical productivity tool acting as an interface for AI-powered clinical evidence summarization.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

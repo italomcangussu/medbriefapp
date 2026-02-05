@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldAlert, Mail, Lock, AlertCircle, ArrowLeft, KeyRound, Loader2 } from 'lucide-react';
+import { ShieldAlert, Lock, AlertCircle, ArrowLeft, KeyRound, Loader2 } from 'lucide-react';
 import { supabase } from '../services/supabaseClient';
 
 interface AdminLoginProps {
@@ -71,19 +71,19 @@ const AdminLogin: React.FC<AdminLoginProps> = ({ onLogin, onBack }) => {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[85vh] p-4 sm:p-6 bg-slate-50">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
         className="w-full max-w-[380px]"
       >
-        <button 
-            onClick={onBack}
-            className="mb-6 text-slate-500 hover:text-slate-800 flex items-center text-[15px] font-medium transition-colors"
-            disabled={isLoading}
-          >
-            <ArrowLeft size={18} className="mr-1" strokeWidth={2.5} />
-            Voltar
+        <button
+          onClick={onBack}
+          className="mb-6 text-slate-500 hover:text-slate-800 flex items-center text-[15px] font-medium transition-colors"
+          disabled={isLoading}
+        >
+          <ArrowLeft size={18} className="mr-1" strokeWidth={2.5} />
+          Voltar
         </button>
 
         <div className="text-center mb-8">
@@ -97,8 +97,8 @@ const AdminLogin: React.FC<AdminLoginProps> = ({ onLogin, onBack }) => {
         <form onSubmit={handleSubmit} className="space-y-6">
           <AnimatePresence>
             {error && (
-              <motion.div 
-                initial={{ opacity: 0, height: 0, scale: 0.9 }} 
+              <motion.div
+                initial={{ opacity: 0, height: 0, scale: 0.9 }}
                 animate={{ opacity: 1, height: 'auto', scale: 1 }}
                 exit={{ opacity: 0, height: 0, scale: 0.9 }}
                 className="bg-red-50/80 backdrop-blur-md text-red-700 px-4 py-3 rounded-2xl flex items-center text-[13px] font-semibold shadow-sm border border-red-200"
@@ -110,7 +110,7 @@ const AdminLogin: React.FC<AdminLoginProps> = ({ onLogin, onBack }) => {
           </AnimatePresence>
 
           <div className="space-y-4">
-             {/* Admin Input Style - Darker/Red Focus */}
+            {/* Admin Input Style - Darker/Red Focus */}
             <div className="space-y-4">
               <div className="relative group">
                 <input

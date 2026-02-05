@@ -24,15 +24,6 @@ export const sendToWebhook = async (
 
     const data = await response.json();
 
-    // Validate expected response structure based on requirements
-    if (typeof data.summary !== 'string') {
-      // Fallback if the webhook returns just text or a different key, adapt as needed
-      if (data.text) return { summary: data.text };
-      if (data.output) return { summary: data.output };
-      // If purely JSON object without known keys, stringify it
-      return { summary: JSON.stringify(data, null, 2) };
-    }
-
     return data as ApiResponse;
   } catch (error) {
     console.error('Webhook Error:', error);

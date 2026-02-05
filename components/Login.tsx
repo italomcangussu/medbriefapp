@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LogIn, Mail, Lock, ChevronRight, AlertCircle } from 'lucide-react';
 import { supabase } from '../services/supabaseClient';
@@ -13,94 +13,47 @@ const Login: React.FC<LoginProps> = ({ onLogin, onSwitchToRegister, onAdminMode 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const googleBtnRef = useRef<HTMLDivElement>(null);
 
   // Secret Admin Trigger State
-  const [secretClicks, setSecretClicks] = useState(0);
+  const [, setSecretClicks] = useState(0);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // iOS Spring Animation Configuration
   const springTransition = { type: "spring" as const, stiffness: 300, damping: 30 };
 
-  useEffect(() => {
-    const initializeGoogleInfo = () => {
-        if (window.google && googleBtnRef.current) {
-            try {
-                // Check if already rendered to avoid duplicates or errors
-                if (googleBtnRef.current.innerHTML !== "") return;
-
-                window.google.accounts.id.initialize({
-                client_id: '61634379849-8j8c85jik4v7hfl6ij9qc42a6qi8da0d.apps.googleusercontent.com',
-                callback: handleGoogleCredentialResponse,
-                auto_select: false,
-                cancel_on_tap_outside: true
-                });
-
-                window.google.accounts.id.renderButton(googleBtnRef.current, {
-                theme: 'outline',
-                size: 'large',
-                type: 'standard',
-                shape: 'pill',
-                text: 'signin_with',
-                logo_alignment: 'left',
-                width: googleBtnRef.current.clientWidth || 320
-                });
-            } catch (err) {
-                console.error("Google Auth Init Error", err);
-            }
-        }
-    };
-
-    // Try immediately
-    initializeGoogleInfo();
-
-    // Retry if script hasn't loaded yet
-    const timer = setInterval(() => {
-        if (window.google) {
-            initializeGoogleInfo();
-            clearInterval(timer);
-        }
-    }, 500);
-
-    return () => clearInterval(timer);
-  }, []);
-
-  const handleGoogleCredentialResponse = async (response: any) => {
-    if (!response.credential) return;
-
+  const handleGoogleLogin = async () => {
     try {
-      const { error: authError } = await supabase.auth.signInWithIdToken({
+      const { error: authError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        token: response.credential,
+        options: {
+          redirectTo: window.location.origin
+        }
       });
 
-      if (authError) {
-        throw authError;
-      }
-
-      onLogin();
+      if (authError) throw authError;
+      // The redirect happens automatically
     } catch (err: any) {
       console.error("Google Login Error:", err);
-      setError(err.message || "Falha no login com Google.");
+      setError(err.message || "Falha ao iniciar login com Google.");
     }
   };
 
   const handleSecretClick = () => {
     setSecretClicks(prev => {
-        const newCount = prev + 1;
-        if (newCount >= 5) {
-            onAdminMode();
-            return 0;
-        }
-        return newCount;
+      const newCount = prev + 1;
+      if (newCount >= 5) {
+        onAdminMode();
+        return 0;
+      }
+      return newCount;
     });
 
     // Reset clicks if user stops clicking for 1 second
     if (clickTimeoutRef.current) {
-        clearTimeout(clickTimeoutRef.current);
+      clearTimeout(clickTimeoutRef.current);
     }
     clickTimeoutRef.current = setTimeout(() => {
-        setSecretClicks(0);
+      setSecretClicks(0);
     }, 1000);
   };
 
@@ -113,8 +66,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onSwitchToRegister, onAdminMode 
       return;
     }
     if (!email.includes('@')) {
-       setError('E-mail inválido.');
-       return;
+      setError('E-mail inválido.');
+      return;
     }
     try {
       const { error: authError } = await supabase.auth.signInWithPassword({
@@ -138,13 +91,13 @@ const Login: React.FC<LoginProps> = ({ onLogin, onSwitchToRegister, onAdminMode 
   };
 
   const handleInputChange = (setter: React.Dispatch<React.SetStateAction<string>>, value: string) => {
-      setter(value);
-      if (error) setError(null);
+    setter(value);
+    if (error) setError(null);
   };
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[85vh] p-4 sm:p-6">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={springTransition}
@@ -152,7 +105,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onSwitchToRegister, onAdminMode 
       >
         {/* iOS Large Title Style */}
         <div className="text-center mb-8">
-          <div 
+          <div
             onClick={handleSecretClick}
             className="inline-flex items-center justify-center w-16 h-16 mb-4 rounded-[22px] bg-white shadow-lg shadow-slate-200/50 cursor-pointer active:scale-95 transition-transform select-none"
           >
@@ -165,8 +118,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onSwitchToRegister, onAdminMode 
         <form onSubmit={handleSubmit} className="space-y-6">
           <AnimatePresence>
             {error && (
-              <motion.div 
-                initial={{ opacity: 0, height: 0, scale: 0.9 }} 
+              <motion.div
+                initial={{ opacity: 0, height: 0, scale: 0.9 }}
                 animate={{ opacity: 1, height: 'auto', scale: 1 }}
                 exit={{ opacity: 0, height: 0, scale: 0.9 }}
                 className="bg-red-50/80 backdrop-blur-md text-red-600 px-4 py-3 rounded-2xl flex items-center text-[13px] font-semibold shadow-sm border border-red-100/50"
@@ -220,13 +173,17 @@ const Login: React.FC<LoginProps> = ({ onLogin, onSwitchToRegister, onAdminMode 
           <span className="h-px flex-1 bg-slate-200"></span>
         </div>
 
-        {/* Google Button Container - already renders as pill */}
-        <div className="w-full flex justify-center h-[50px]">
-          <div ref={googleBtnRef} className="w-full"></div>
-        </div>
+        {/* Google Login Button */}
+        <button
+          onClick={handleGoogleLogin}
+          className="w-full flex items-center justify-center space-x-3 py-3 px-4 bg-white border border-slate-200 rounded-2xl hover:bg-slate-50 transition-all duration-200 shadow-sm active:scale-[0.98]"
+        >
+          <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
+          <span className="text-[17px] font-semibold text-slate-700">Continuar com Google</span>
+        </button>
 
         <div className="mt-8 text-center">
-          <button 
+          <button
             onClick={onSwitchToRegister}
             className="text-[#007AFF] text-[15px] font-medium hover:opacity-80 transition-opacity flex items-center justify-center mx-auto space-x-1"
           >

@@ -8,6 +8,7 @@ export interface ApiRequestPayload {
   content: string;
   fileName?: string;
   mimeType?: string;
+  id?: string;
   // Admin specific payload extensions
   action?: 'get_stats' | 'get_users' | 'get_logs' | 'ban_user';
   adminKey?: string;

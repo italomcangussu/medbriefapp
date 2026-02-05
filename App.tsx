@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, FileText, UploadCloud, Link as LinkIcon, AlertCircle, ArrowRight, LogOut } from 'lucide-react';
+import { FileText, UploadCloud, Link as LinkIcon, AlertCircle, ArrowRight, LogOut } from 'lucide-react';
 import { AppSettings, InputMode, AuthView } from './types';
 import { DEFAULT_WEBHOOK_URL, STORAGE_KEY_SETTINGS, STORAGE_KEY_AUTH_MODE } from './constants';
-import SettingsModal from './components/SettingsModal';
+
 import LoadingDNA from './components/LoadingDNA';
 import ResultDisplay from './components/ResultDisplay';
 import Login from './components/Login';
 import AdminLogin from './components/AdminLogin';
 import AdminDashboard from './components/admin/AdminDashboard';
 import RegisterWizard from './components/RegisterWizard';
-import { sendToWebhook, fileToBase64 } from './services/n8nService';
+import { sendToWebhook } from './services/n8nService';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from './services/supabaseClient';
+import { extractTextFromPdf } from './services/pdfExtractor';
 
 const App: React.FC = () => {
   // Auth State
@@ -21,7 +22,7 @@ const App: React.FC = () => {
 
   // App State
   const [settings, setSettings] = useState<AppSettings>({ webhookUrl: DEFAULT_WEBHOOK_URL });
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
   const [inputMode, setInputMode] = useState<InputMode>(InputMode.FILE);
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -101,7 +102,7 @@ const App: React.FC = () => {
     });
 
     return () => {
-        subscription.unsubscribe();
+      subscription.unsubscribe();
     };
   }, []);
 
@@ -117,7 +118,7 @@ const App: React.FC = () => {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     localStorage.removeItem(STORAGE_KEY_AUTH_MODE);
-    
+
     setIsAuthenticated(false);
     setAuthView('LOGIN');
     setResult(null);
@@ -145,23 +146,19 @@ const App: React.FC = () => {
     setResult(null);
 
     if (!settings.webhookUrl) {
-      setError("Por favor, configure a URL do Webhook nas configurações.");
-      setIsSettingsOpen(true);
+      setError("Por favor, entre em contato com o administrador para configurar o sistema.");
       return;
     }
-
     if (inputMode === InputMode.FILE && !selectedFile) {
       setError("Selecione um arquivo PDF para enviar.");
       return;
     }
-
     if (inputMode === InputMode.TEXT && !textInput.trim()) {
       setError("Insira o texto ou link para enviar.");
       return;
     }
 
     setIsLoading(true);
-    const startedAt = performance.now();
     const inputTextValue = inputMode === InputMode.TEXT ? textInput.trim() : null;
     const inputFileName = inputMode === InputMode.FILE ? selectedFile?.name || null : null;
     const inputMimeType = inputMode === InputMode.FILE ? selectedFile?.type || null : null;
@@ -170,79 +167,143 @@ const App: React.FC = () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       const currentUserId = userId || user?.id || null;
+      if (!currentUserId) throw new Error("Usuário não autenticado.");
 
-      if (currentUserId) {
-        const { data: summaryRow, error: insertError } = await supabase
+      // 1. Create DB Record (Processing)
+      const { data: summaryRow, error: insertError } = await supabase
+        .from('summaries')
+        .insert({
+          user_id: currentUserId,
+          input_type: inputMode === InputMode.FILE ? 'file' : 'text',
+          input_text: inputTextValue, // Will be filled by Edge Function if FILE
+          file_name: inputFileName,
+          mime_type: inputMimeType,
+          status: 'processing'
+        })
+        .select('id')
+        .single();
+
+      if (insertError) throw new Error("Falha ao criar registro.");
+      summaryId = summaryRow.id;
+
+      // 2. Setup Realtime Listener (Async Wait)
+      // We keep this same logic as before to listen for N8N completion
+      const channel = supabase
+        .channel(`summary-${summaryId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'summaries',
+            filter: `id=eq.${summaryId}`
+          },
+          (payload) => {
+            const newRow = payload.new as any;
+            if (newRow.status === 'completed' && newRow.summary_text) {
+              setResult(newRow.summary_text);
+              setIsLoading(false);
+              supabase.removeChannel(channel);
+            } else if (newRow.status === 'failed') {
+              setError(newRow.error_message || "Falha no processamento remoto.");
+              setIsLoading(false);
+              supabase.removeChannel(channel);
+            }
+          }
+        )
+        .subscribe();
+
+      // 3. Fallback Polling (Safety Net)
+      const pollInterval = setInterval(async () => {
+        const { data: pollData } = await supabase
           .from('summaries')
-          .insert({
-            user_id: currentUserId,
-            input_type: inputMode === InputMode.FILE ? 'file' : 'text',
-            input_text: inputTextValue,
-            file_name: inputFileName,
-            mime_type: inputMimeType,
-            status: 'processing'
-          })
-          .select('id')
+          .select('status, summary_text, error_message')
+          .eq('id', summaryId as string)
           .single();
 
-        if (insertError) {
-          console.error('Failed to create summary record:', insertError);
-        } else {
-          summaryId = summaryRow.id;
+        if (pollData) {
+          if (pollData.status === 'completed' && pollData.summary_text) {
+            setResult(pollData.summary_text);
+            setIsLoading(false);
+            clearInterval(pollInterval);
+            supabase.removeChannel(channel);
+          } else if (pollData.status === 'failed') {
+            setError(pollData.error_message || "Falha.");
+            setIsLoading(false);
+            clearInterval(pollInterval);
+            supabase.removeChannel(channel);
+          }
         }
-      }
+      }, 4000);
 
-      let content = '';
-      let fileName = undefined;
-      let mimeType = undefined;
+
+      // 4. Handle CONTENT processing
+      let finalContentForN8N = '';
+
+      const isUrl = (str: string) => {
+        try {
+          new URL(str);
+          return true;
+        } catch {
+          return false;
+        }
+      };
 
       if (inputMode === InputMode.FILE && selectedFile) {
-        content = await fileToBase64(selectedFile);
-        fileName = selectedFile.name;
-        mimeType = selectedFile.type;
+        // A) PDF FLOW: Extract text locally in browser using PDF.js
+        console.log("Extracting PDF text locally...");
+
+        try {
+          finalContentForN8N = await extractTextFromPdf(selectedFile);
+          console.log("PDF extracted, text length:", finalContentForN8N.length);
+        } catch (pdfError) {
+          console.error("PDF Extraction Error:", pdfError);
+          throw new Error("Falha ao extrair texto do PDF.");
+        }
+
+      } else if (inputMode === InputMode.TEXT && isUrl(textInput.trim())) {
+        // B) URL FLOW: Edge Function -> Scrape -> Text
+        console.log("URL detected, scraping...");
+        const targetUrl = textInput.trim();
+
+        const { data: scrapeData, error: scrapeError } = await supabase.functions.invoke('scrape-url', {
+          body: { record_id: summaryId, url: targetUrl }
+        });
+
+        if (scrapeError || !scrapeData?.text) {
+          console.error("Scraping Error:", scrapeError || "No text returned");
+          // Fallback: If scraping fails, send the URL itself to N8N as a fallback (some workflows might handle it)
+          // But for now let's error out or warn.
+          // Let's fallback to sending the URL string so N8N knows at least something.
+          console.warn("Scraping failed, sending raw URL.");
+          finalContentForN8N = targetUrl;
+        } else {
+          finalContentForN8N = scrapeData.text;
+        }
+
       } else {
-        content = textInput;
+        // C) RAW TEXT FLOW: Use input directly
+        finalContentForN8N = textInput;
       }
 
-      const response = await sendToWebhook(settings.webhookUrl, {
-        type: inputMode === InputMode.FILE ? 'file' : 'text',
-        content,
-        fileName,
-        mimeType
+      // 5. Trigger N8N (Now typically sending TEXT, not File)
+      // We send type='text' because we already extracted it, even if source was file.
+      // This makes N8N lighter.
+      await sendToWebhook(settings.webhookUrl, {
+        type: 'text', // IMPORTANT: We force 'text' type now because we extracted it!
+        content: finalContentForN8N,
+        fileName: inputFileName || undefined, // Keep metadata
+        mimeType: inputMimeType || undefined,
+        id: summaryId || undefined
       });
 
-      setResult(response.summary);
-      setTextInput('');
-      setSelectedFile(null);
-
-      if (summaryId) {
-        const { error: updateError } = await supabase
-          .from('summaries')
-          .update({
-            summary_text: response.summary,
-            status: 'completed',
-            processing_time_ms: Math.round(performance.now() - startedAt)
-          })
-          .eq('id', summaryId);
-
-        if (updateError) {
-          console.error('Failed to update summary record:', updateError);
-        }
-      }
     } catch (err: any) {
-      if (summaryId) {
-        await supabase
-          .from('summaries')
-          .update({
-            status: 'failed',
-            error_message: err?.message || 'Falha ao processar solicitação.'
-          })
-          .eq('id', summaryId);
-      }
-
-      setError(err.message || "Falha ao processar solicitação.");
-    } finally {
+      console.error(err);
+      setError(err.message || "Falha ao processar.");
       setIsLoading(false);
+      if (summaryId) {
+        await supabase.from('summaries').update({ status: 'failed', error_message: err.message }).eq('id', summaryId);
+      }
     }
   };
 
@@ -255,13 +316,13 @@ const App: React.FC = () => {
   // RENDER: Admin Dashboard
   // -------------------------
   if (isAuthenticated && authView === 'ADMIN_DASHBOARD') {
-      return (
-          <AdminDashboard 
-            onLogout={handleLogout} 
-            settings={settings}
-            onUpdateSettings={handleSaveSettings}
-          />
-      );
+    return (
+      <AdminDashboard
+        onLogout={handleLogout}
+        settings={settings}
+        onUpdateSettings={handleSaveSettings}
+      />
+    );
   }
 
   // -------------------------
@@ -273,44 +334,44 @@ const App: React.FC = () => {
         {/* Background Accents */}
         <div className="absolute top-0 left-0 w-full h-64 bg-gradient-to-b from-blue-100 to-transparent pointer-events-none" />
         <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-blue-200/40 rounded-full blur-3xl pointer-events-none" />
-        
+
         <header className="relative z-10 pt-8 flex justify-center">
-            <div className="flex items-center space-x-2">
-                <div className="bg-blue-600 text-white p-2 rounded-xl shadow-lg shadow-blue-600/20">
-                    <FileText size={24} />
-                </div>
-                <h1 className="text-2xl font-bold text-slate-800 tracking-tight">MedBrief</h1>
+          <div className="flex items-center space-x-2">
+            <div className="bg-blue-600 text-white p-2 rounded-xl shadow-lg shadow-blue-600/20">
+              <FileText size={24} />
             </div>
+            <h1 className="text-2xl font-bold text-slate-800 tracking-tight">MedBrief</h1>
+          </div>
         </header>
 
         <main className="flex-1 relative z-10">
-            <AnimatePresence mode="wait">
-                {authView === 'LOGIN' && (
-                    <motion.div key="login" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
-                        <Login 
-                            onLogin={handleLogin} 
-                            onSwitchToRegister={() => setAuthView('REGISTER')}
-                            onAdminMode={() => setAuthView('ADMIN_LOGIN')}
-                        />
-                    </motion.div>
-                )}
-                {authView === 'REGISTER' && (
-                    <motion.div key="register" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
-                         <RegisterWizard 
-                            onComplete={handleLogin} 
-                            onBackToLogin={() => setAuthView('LOGIN')}
-                         />
-                    </motion.div>
-                )}
-                {authView === 'ADMIN_LOGIN' && (
-                    <motion.div key="admin" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
-                         <AdminLogin 
-                            onLogin={handleAdminLoginSuccess}
-                            onBack={() => setAuthView('LOGIN')}
-                         />
-                    </motion.div>
-                )}
-            </AnimatePresence>
+          <AnimatePresence mode="wait">
+            {authView === 'LOGIN' && (
+              <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <Login
+                  onLogin={handleLogin}
+                  onSwitchToRegister={() => setAuthView('REGISTER')}
+                  onAdminMode={() => setAuthView('ADMIN_LOGIN')}
+                />
+              </motion.div>
+            )}
+            {authView === 'REGISTER' && (
+              <motion.div key="register" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <RegisterWizard
+                  onComplete={handleLogin}
+                  onBackToLogin={() => setAuthView('LOGIN')}
+                />
+              </motion.div>
+            )}
+            {authView === 'ADMIN_LOGIN' && (
+              <motion.div key="admin" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <AdminLogin
+                  onLogin={handleAdminLoginSuccess}
+                  onBack={() => setAuthView('LOGIN')}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </main>
       </div>
     );
@@ -332,17 +393,11 @@ const App: React.FC = () => {
           </div>
           <div className="flex items-center space-x-1">
             <button
-                onClick={() => setIsSettingsOpen(true)}
-                className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
+              onClick={handleLogout}
+              className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
+              title="Sair"
             >
-                <Settings size={24} />
-            </button>
-            <button
-                onClick={handleLogout}
-                className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
-                title="Sair"
-            >
-                <LogOut size={24} />
+              <LogOut size={24} />
             </button>
           </div>
         </div>
@@ -362,7 +417,7 @@ const App: React.FC = () => {
               <LoadingDNA />
             </motion.div>
           ) : result ? (
-             // Result View
+            // Result View
             <motion.div
               key="result"
               initial={{ opacity: 0 }}
@@ -370,13 +425,13 @@ const App: React.FC = () => {
               exit={{ opacity: 0 }}
               className="space-y-6"
             >
-               <ResultDisplay content={result} />
-               <button
-                  onClick={handleReset}
-                  className="w-full py-4 bg-white border border-slate-300 text-slate-600 font-semibold rounded-xl hover:bg-slate-50 transition-colors shadow-sm"
-               >
-                 Analisar Novo Artigo
-               </button>
+              <ResultDisplay content={result} />
+              <button
+                onClick={handleReset}
+                className="w-full py-4 bg-white border border-slate-300 text-slate-600 font-semibold rounded-xl hover:bg-slate-50 transition-colors shadow-sm"
+              >
+                Analisar Novo Artigo
+              </button>
             </motion.div>
           ) : (
             // Input View
@@ -391,11 +446,10 @@ const App: React.FC = () => {
               <div className="flex bg-slate-200 p-1 rounded-xl">
                 <button
                   onClick={() => setInputMode(InputMode.FILE)}
-                  className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all ${
-                    inputMode === InputMode.FILE
-                      ? 'bg-white text-blue-600 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700'
-                  }`}
+                  className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all ${inputMode === InputMode.FILE
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                    }`}
                 >
                   <span className="flex items-center justify-center">
                     <UploadCloud size={18} className="mr-2" />
@@ -404,13 +458,12 @@ const App: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setInputMode(InputMode.TEXT)}
-                  className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all ${
-                    inputMode === InputMode.TEXT
-                      ? 'bg-white text-blue-600 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700'
-                  }`}
+                  className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all ${inputMode === InputMode.TEXT
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                    }`}
                 >
-                   <span className="flex items-center justify-center">
+                  <span className="flex items-center justify-center">
                     <LinkIcon size={18} className="mr-2" />
                     Texto / Link
                   </span>
@@ -421,11 +474,11 @@ const App: React.FC = () => {
               <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 min-h-[300px] flex flex-col justify-center">
                 {inputMode === InputMode.FILE ? (
                   <label className="flex flex-col items-center justify-center w-full h-48 border-2 border-dashed border-blue-200 rounded-xl cursor-pointer bg-blue-50/50 hover:bg-blue-50 hover:border-blue-400 transition-all group">
-                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                    <div className="flex flex-col items-center justify-center pt-5 pb-6 w-full px-4">
                       <div className="p-4 bg-white rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform">
                         <UploadCloud className="w-8 h-8 text-blue-500" />
                       </div>
-                      <p className="mb-2 text-sm text-slate-600 font-medium">
+                      <p className="mb-2 text-sm text-slate-600 font-medium w-full truncate text-center">
                         {selectedFile ? selectedFile.name : "Toque para selecionar o PDF"}
                       </p>
                       <p className="text-xs text-slate-400">PDF até 10MB</p>
@@ -473,13 +526,6 @@ const App: React.FC = () => {
         </AnimatePresence>
       </main>
 
-      {/* Settings Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSave={handleSaveSettings}
-      />
     </div>
   );
 };

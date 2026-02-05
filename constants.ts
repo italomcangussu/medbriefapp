@@ -1,4 +1,4 @@
-export const DEFAULT_WEBHOOK_URL = ''; // User must configure this
+export const DEFAULT_WEBHOOK_URL = (import.meta.env && import.meta.env.VITE_N8N_WEBHOOK_URL) || ''; // User must configure this or use ENV
 export const STORAGE_KEY_SETTINGS = 'medbrief_settings_v1';
 export const STORAGE_KEY_AUTH_MODE = 'medbrief_auth_mode'; // 'USER' | 'ADMIN'
 
